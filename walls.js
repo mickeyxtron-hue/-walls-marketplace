@@ -539,38 +539,43 @@ window.WW_APP = {
   // which caused the flickering/resetting and manifest console errors.
   ensureInstallAssets: function() {
     try {
-      // Build an inline manifest so install works even when /manifest.webmanifest
-      // is not served by the host. Browsers accept data: manifest URLs.
-      const icon = "data:image/svg+xml;utf8," + encodeURIComponent(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">' +
-        '<rect width="512" height="512" rx="96" fill="#2E7D32"/>' +
-        '<path d="M128 240l128-112 128 112v144a16 16 0 0 1-16 16h-80v-96h-64v96h-80a16 16 0 0 1-16-16z" fill="#fff"/>' +
-        '</svg>'
-      );
-      const manifest = {
-        name: "Walls - Property Marketplace",
-        short_name: "Walls",
-        start_url: location.pathname,
-        scope: "/",
-        display: "standalone",
-        orientation: "any",
-        background_color: "#ffffff",
-        theme_color: "#2E7D32",
-        icons: [
-          { src: icon, sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
-          { src: icon, sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" }
-        ]
-      };
-      const manifestUrl = "data:application/manifest+json;charset=utf-8," +
-        encodeURIComponent(JSON.stringify(manifest));
+      // If the page already ships a real /manifest.webmanifest link AND a real
+      // /icon-192.png is reachable, don't override it with a data: URL — the
+      // real manifest is needed for proper PWA install (custom icon, name).
+      const existingManifest = document.querySelector('link[rel="manifest"]');
+      const hasRealManifest = existingManifest && /\.webmanifest(\?|$)/i.test(existingManifest.href || '');
 
-      let manifestLink = document.querySelector('link[rel="manifest"]');
-      if (!manifestLink) {
-        manifestLink = document.createElement('link');
-        manifestLink.rel = 'manifest';
-        document.head.appendChild(manifestLink);
+      if (!hasRealManifest) {
+        // Fallback: synthesize a manifest only when none is present.
+        const icon = "data:image/svg+xml;utf8," + encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">' +
+          '<rect width="512" height="512" rx="96" fill="#C8B897"/>' +
+          '<path d="M128 240l128-112 128 112v144a16 16 0 0 1-16 16h-80v-96h-64v96h-80a16 16 0 0 1-16-16z" fill="#fff"/>' +
+          '</svg>'
+        );
+        const manifest = {
+          name: "Walls - Property Marketplace",
+          short_name: "Walls",
+          start_url: "/",
+          scope: "/",
+          display: "standalone",
+          orientation: "any",
+          background_color: "#ffffff",
+          theme_color: "#C8B897",
+          icons: [
+            { src: icon, sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
+            { src: icon, sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" }
+          ]
+        };
+        const manifestUrl = "data:application/manifest+json;charset=utf-8," + encodeURIComponent(JSON.stringify(manifest));
+        let manifestLink = existingManifest;
+        if (!manifestLink) {
+          manifestLink = document.createElement('link');
+          manifestLink.rel = 'manifest';
+          document.head.appendChild(manifestLink);
+        }
+        manifestLink.href = manifestUrl;
       }
-      manifestLink.href = manifestUrl;
 
       const setMeta = (name, content, attr) => {
         attr = attr || 'name';
@@ -578,30 +583,27 @@ window.WW_APP = {
         if (!m) { m = document.createElement('meta'); m.setAttribute(attr, name); document.head.appendChild(m); }
         m.content = content;
       };
-      setMeta('theme-color', '#2E7D32');
       setMeta('apple-mobile-web-app-capable', 'yes');
-      setMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+      setMeta('apple-mobile-web-app-status-bar-style', 'default');
       setMeta('apple-mobile-web-app-title', 'Walls');
       setMeta('mobile-web-app-capable', 'yes');
       setMeta('application-name', 'Walls');
 
-      if (!document.querySelector('link[rel="apple-touch-icon"]')) {
-        const apple = document.createElement('link');
-        apple.rel = 'apple-touch-icon';
-        apple.href = icon;
-        document.head.appendChild(apple);
-      }
-
-      // Register a minimal same-origin service worker so Chrome/Edge/Android
-      // surface the install prompt. Skip if already registered or unsupported.
+      // Register the REAL same-origin service worker (sw.js) so push works
+      // and Chrome/Edge/Android surface the install prompt.
       if ('serviceWorker' in navigator && location.protocol === 'https:') {
         navigator.serviceWorker.getRegistrations().then(regs => {
-          if (regs && regs.length) return;
-          const swCode = "self.addEventListener('install',e=>self.skipWaiting());" +
-            "self.addEventListener('activate',e=>self.clients.claim());" +
-            "self.addEventListener('fetch',e=>{});";
-          const blobUrl = URL.createObjectURL(new Blob([swCode], { type: 'text/javascript' }));
-          navigator.serviceWorker.register(blobUrl).catch(() => {});
+          const hasReal = (regs || []).some(r => r.active && /\/sw\.js$/.test(r.active.scriptURL));
+          if (hasReal) return;
+          navigator.serviceWorker.register('/sw.js').catch(() => {
+            // Fallback to blob worker if /sw.js isn't being served yet.
+            const swCode = "self.addEventListener('install',e=>self.skipWaiting());" +
+              "self.addEventListener('activate',e=>self.clients.claim());" +
+              "self.addEventListener('fetch',e=>{});" +
+              "self.addEventListener('push',e=>{try{const d=e.data?e.data.json():{};e.waitUntil(self.registration.showNotification(d.title||'Walls',{body:d.body||'',icon:'/icon-192.png',badge:'/icon-192.png',data:d.data||{}}));}catch(_){}})";
+            const blobUrl = URL.createObjectURL(new Blob([swCode], { type: 'text/javascript' }));
+            navigator.serviceWorker.register(blobUrl).catch(() => {});
+          });
         }).catch(() => {});
       }
     } catch (e) {
@@ -704,7 +706,7 @@ window.WW_APP = {
     if (search.category && search.category !== 'All' && listing.category !== search.category) return false;
     if (search.location && search.location !== 'Anywhere' && listing.location !== search.location) return false;
     if (search.priceMin != null || search.priceMax != null) {
-      const price = listing.price ? parseFloat(listing.price.replace(/[^0-9.]/g, '')) : null;
+      const price = (listing.price !== undefined && listing.price !== null && listing.price !== '') ? parseFloat(String(listing.price).replace(/[^0-9.]/g, '')) : null;
       if (price == null) return false;
       if (search.priceMin != null && price < search.priceMin) return false;
       if (search.priceMax != null && price > search.priceMax) return false;
@@ -928,7 +930,25 @@ window.WW_APP = {
           } catch (_) {}
           return;
         }
-        self.listings = arr.map(l => self._normalizeListing(l));
+        // Build a lookup of existing local images so freshly-uploaded data-URL
+        // previews (and any images we've already resolved to https) survive
+        // the next backend refresh even if the server returned bare filenames
+        // or no images at all.
+        const _localImgById = {};
+        const _localImgByClient = {};
+        (self.listings || []).forEach(function(prev) {
+          if (prev && Array.isArray(prev.images) && prev.images.length) {
+            if (prev.id) _localImgById[prev.id] = prev.images;
+            if (prev.clientId) _localImgByClient[prev.clientId] = prev.images;
+          }
+        });
+        self.listings = arr.map(l => self._normalizeListing(l)).map(function(l) {
+          if ((!l.images || l.images.length === 0)) {
+            const fallback = (l.id && _localImgById[l.id]) || (l.clientId && _localImgByClient[l.clientId]) || (l._id && _localImgById[l._id]);
+            if (fallback && fallback.length) l.images = fallback.slice();
+          }
+          return l;
+        });
         self.sortListings();
         try { localStorage.setItem('ww_listings_v2', JSON.stringify(self.listings)); } catch (_) {}
         try {
@@ -3328,7 +3348,7 @@ HOW TO USE THE APP:
         this.showRecentEnquiries();
         break;
       case 'mylistings':
-        this.showSavedSearches();
+        this.showMyListingsHub();
         break;
     }
   },
@@ -4114,11 +4134,36 @@ HOW TO USE THE APP:
       featuresHTML = `
         <div class="listing-features" style="margin-bottom:20px;">
           <h3 style="margin-bottom:12px;font-size:16px;">Features</h3>
-          <ul style="list-style:none;padding:0;margin:0;">
+          <ul style="list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill, minmax(180px,1fr));gap:6px;">
             ${listing.features.map(f => `<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0;"><i class="fas fa-check" style="color:#4CAF50;font-size:14px;"></i> <span>${f}</span></li>`).join('')}
           </ul>
         </div>`;
     }
+
+    // Property Details — show every scalar field the seller submitted
+    // (bedrooms, bathrooms, occupancy, etc.) on the detail view.
+    let propertyDetailsHTML = '';
+    const detailRows = [];
+    if (listing.bedrooms !== undefined && listing.bedrooms !== '' && listing.bedrooms !== null)
+      detailRows.push(['Bedrooms', listing.bedrooms]);
+    if (listing.bathrooms !== undefined && listing.bathrooms !== '' && listing.bathrooms !== null)
+      detailRows.push(['Bathrooms', listing.bathrooms]);
+    if (listing.categoryLabel) detailRows.push(['Category', listing.categoryLabel]);
+    else if (listing.category) detailRows.push(['Category', listing.category]);
+    if (listing.occupancyStatus) detailRows.push(['Occupancy', listing.occupancyStatus]);
+    if (listing.verificationStatus) detailRows.push(['Verification', listing.verificationStatus]);
+    if (listing.createdAt) detailRows.push(['Listed', this.formatRelativeTime(listing.createdAt)]);
+    if (detailRows.length) {
+      propertyDetailsHTML = `
+        <div class="property-details" style="margin-bottom:20px;padding:16px;background:#fafafa;border-radius:12px;border:1px solid #f0f0f0;">
+          <h3 style="margin:0 0 12px 0;font-size:16px;"><i class="fas fa-info-circle" style="color:#C8B897;"></i> Property Details</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px,1fr));gap:10px;">
+            ${detailRows.map(r => `<div style="font-size:14px;"><div style="color:#888;font-size:12px;">${r[0]}</div><div style="font-weight:600;color:#333;">${r[1]}</div></div>`).join('')}
+          </div>
+        </div>`;
+    }
+    // Hand `propertyDetailsHTML` into the existing layout via featuresHTML.
+    featuresHTML = propertyDetailsHTML + featuresHTML;
     
     let customFieldsHTML = '';
     if (listing.category === 'househelp') {
@@ -5256,8 +5301,9 @@ HOW TO USE THE APP:
           <div style="max-height: 400px; overflow-y: auto;">
             ${priceRanges.map(range => {
               const count = this.listings.filter(listing => {
-                if (!listing.price || listing.price === 'Price on request') return range.label === 'Any price';
-                const price = parseInt(listing.price.replace(/[^0-9]/g, ''));
+                if (listing.price === undefined || listing.price === null || listing.price === '' || listing.price === 'Price on request') return range.label === 'Any price';
+                const price = parseInt(String(listing.price).replace(/[^0-9]/g, ''), 10);
+                if (isNaN(price)) return false;
                 return price >= range.min && price <= range.max;
               }).length;
               return `<div class="filter-option" style="padding: 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer;" onclick="window.WW_APP.filterByPrice('${range.label}')"><strong>${range.label}</strong> <span style="float:right;color:#666;">${count} listings</span></div>`;
@@ -6502,8 +6548,434 @@ HOW TO USE THE APP:
     this.saveListingsToStorage();
     showToast(`Bidding ${listing.bidEnabled ? 'enabled' : 'disabled'} for this listing`, 'success');
     this.renderAdminListings($id('adminListingsSearch')?.value || '');
+  },
+
+  // ============================================================
+  // ===== ADDITIONS (v2): tabbed My Listings hub, server-sync
+  // ===== for likes / saved searches, Web Push subscription,
+  // ===== theme picker, custom install button.
+  // ============================================================
+
+  // ---- Tabbed "My Listings" hub ----
+  showMyListingsHub: function() {
+    if (!this.user) {
+      showToast('Please log in to view your listings', 'error');
+      try { openLoginModal(); } catch (_) {}
+      return;
+    }
+    const landingView = $id('landingView');
+    const appView = $id('appView');
+    const sellerView = $id('sellerView');
+    const adminView = $id('adminView');
+    if (landingView) landingView.style.display = 'none';
+    if (appView) appView.style.display = 'block';
+    if (sellerView) sellerView.style.display = 'none';
+    if (adminView) adminView.style.display = 'none';
+    this.currentView = 'app';
+    this.currentMode = 'mylistings';
+    this.updateNavHighlight();
+
+    const grid = $id('listingsGrid');
+    const noListings = $id('noListings');
+    const loadMoreContainer = $id('loadMoreContainer');
+    const title = $id('currentCategoryTitle');
+    const count = $id('listingsCount');
+    if (noListings) noListings.style.display = 'none';
+    if (loadMoreContainer) loadMoreContainer.style.display = 'none';
+    if (title) title.textContent = 'My Listings';
+    if (grid) grid.innerHTML = '';
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'padding: 8px 12px 24px;';
+    wrap.innerHTML = `
+      <div class="ww-tabs" style="display:flex;gap:8px;border-bottom:2px solid #eee;margin-bottom:16px;">
+        <button class="ww-tab-btn active" data-tab="uploaded"
+          style="flex:1;padding:12px 16px;background:none;border:none;border-bottom:3px solid var(--primary, #C8B897);font-weight:600;cursor:pointer;color:var(--primary-dark, #A89B7A);">
+          <i class="fas fa-upload"></i> Uploaded Listings
+        </button>
+        <button class="ww-tab-btn" data-tab="saved"
+          style="flex:1;padding:12px 16px;background:none;border:none;border-bottom:3px solid transparent;font-weight:600;cursor:pointer;color:#888;">
+          <i class="fas fa-bookmark"></i> Saved Searches
+        </button>
+      </div>
+      <div id="wwTabUploaded"></div>
+      <div id="wwTabSaved" style="display:none;"></div>
+    `;
+    grid.appendChild(wrap);
+
+    const tabBtns = wrap.querySelectorAll('.ww-tab-btn');
+    const self = this;
+    tabBtns.forEach(btn => btn.addEventListener('click', () => {
+      tabBtns.forEach(b => {
+        b.classList.remove('active');
+        b.style.borderBottom = '3px solid transparent';
+        b.style.color = '#888';
+      });
+      btn.classList.add('active');
+      btn.style.borderBottom = '3px solid var(--primary, #C8B897)';
+      btn.style.color = 'var(--primary-dark, #A89B7A)';
+      const tab = btn.getAttribute('data-tab');
+      $id('wwTabUploaded').style.display = tab === 'uploaded' ? 'block' : 'none';
+      $id('wwTabSaved').style.display    = tab === 'saved'    ? 'block' : 'none';
+      if (count) count.textContent = tab === 'uploaded'
+        ? self.listings.filter(l => l.createdBy === self.user.email).length
+        : (self.savedSearches || []).length;
+    }));
+
+    this._renderMyUploaded($id('wwTabUploaded'));
+    this._renderMySaved($id('wwTabSaved'));
+    if (count) count.textContent = this.listings.filter(l => l.createdBy === this.user.email).length;
+  },
+
+  _renderMyUploaded: function(host) {
+    if (!host) return;
+    const mine = this.listings.filter(l => l.createdBy === this.user.email);
+    if (!mine.length) {
+      host.innerHTML = '<div style="text-align:center;color:#666;padding:32px;"><i class="fas fa-inbox" style="font-size:40px;color:#ccc;display:block;margin-bottom:12px;"></i>You haven\'t uploaded any listings yet.</div>';
+      return;
+    }
+    host.innerHTML = '';
+    mine.forEach(listing => {
+      const card = document.createElement('div');
+      card.style.cssText = 'background:white;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);display:flex;gap:14px;align-items:center;';
+      const img = (listing.images && listing.images[0]) || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="100%" height="100%" fill="%23f5f5f5"/></svg>';
+      const isRental = this._getRentalCategories().includes(listing.category);
+      card.innerHTML = `
+        <div style="width:80px;height:80px;border-radius:8px;overflow:hidden;flex-shrink:0;background:#f5f5f5;">
+          <img src="${img}" style="width:100%;height:100%;object-fit:cover;">
+        </div>
+        <div style="flex:1;min-width:0;">
+          <h4 style="margin:0 0 4px 0;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${listing.title || 'Untitled'}</h4>
+          <div style="font-size:13px;color:#666;">${this.formatPrice(listing)} · ${listing.location || ''}</div>
+          ${listing.verificationStatus === 'pending' ? '<div style="color:#FF9800;font-size:12px;margin-top:4px;">Awaiting verification</div>' : ''}
+          ${isRental && listing.occupancyStatus ? `<div style="font-size:12px;color:#666;margin-top:4px;">Status: <strong>${listing.occupancyStatus}</strong></div>` : ''}
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-outline" data-act="view" style="padding:6px 10px;font-size:12px;"><i class="fas fa-eye"></i> View</button>
+            <button class="btn btn-outline" data-act="edit" style="padding:6px 10px;font-size:12px;"><i class="fas fa-edit"></i> Edit</button>
+            <button class="btn btn-danger"  data-act="del"  style="padding:6px 10px;font-size:12px;background:#F44336;color:#fff;border:none;border-radius:6px;"><i class="fas fa-trash"></i> Delete</button>
+            ${isRental ? `<button class="btn btn-outline" data-act="occ" style="padding:6px 10px;font-size:12px;"><i class="fas fa-bed"></i> ${listing.occupancyStatus === 'occupied' ? 'Mark Vacant' : 'Mark Occupied'}</button>` : ''}
+          </div>
+        </div>
+      `;
+      card.querySelector('[data-act="view"]').addEventListener('click', () => this.showListingDetails(listing));
+      card.querySelector('[data-act="edit"]').addEventListener('click', () => this.editMyListing(listing.id));
+      card.querySelector('[data-act="del"]').addEventListener('click', () => {
+        if (confirm('Delete this listing permanently?')) {
+          this.deleteListingOnBackend(listing.id);
+          this.listings = this.listings.filter(l => l.id !== listing.id);
+          this.saveListingsToStorage();
+          this.showMyListingsHub();
+          showToast('Listing deleted', 'info');
+        }
+      });
+      const occBtn = card.querySelector('[data-act="occ"]');
+      if (occBtn) occBtn.addEventListener('click', () => { this.toggleOccupancy(listing.id); this.showMyListingsHub(); });
+      host.appendChild(card);
+    });
+  },
+
+  _renderMySaved: function(host) {
+    if (!host) return;
+    const list = this.savedSearches || [];
+    if (!list.length) {
+      host.innerHTML = '<div style="text-align:center;color:#666;padding:32px;"><i class="fas fa-search" style="font-size:40px;color:#ccc;display:block;margin-bottom:12px;"></i>No saved searches yet.<br><span style="font-size:13px;">Search with filters, then click <strong>Save This Search</strong> to get a notification when a matching listing is posted.</span></div>';
+      return;
+    }
+    host.innerHTML = '';
+    const visible = this.listings.filter(l => this.isListingVisibleToUser(l));
+    list.forEach((search, index) => {
+      const card = document.createElement('div');
+      card.style.cssText = 'background:white;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);';
+      let crit = '';
+      if (search.keyword) crit += `<span style="background:#f0f0f0;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">🔍 "${search.keyword}"</span>`;
+      if (search.category && search.category !== 'All') crit += `<span style="background:#e8f5e9;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">${search.categoryLabel || search.category}</span>`;
+      if (search.location && search.location !== 'Anywhere') crit += `<span style="background:#e3f2fd;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">📍 ${search.location}</span>`;
+      if (search.priceMin != null) crit += `<span style="background:#fff3e0;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">≥ $${search.priceMin}</span>`;
+      if (search.priceMax != null) crit += `<span style="background:#fff3e0;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">≤ $${search.priceMax}</span>`;
+      if (search.type && search.type !== 'All types') crit += `<span style="background:#f3e5f5;padding:3px 8px;border-radius:6px;margin:0 6px 6px 0;display:inline-block;">${search.type}</span>`;
+      const matchCount = visible.filter(l => this.listingMatchesSearch(l, search)).length;
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">
+          <h4 style="margin:0;">${search.label || 'Saved Search'}</h4>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-outline" data-act="run" style="padding:4px 10px;font-size:12px;"><i class="fas fa-play"></i> View matches</button>
+            <button class="btn btn-danger"  data-act="del" style="padding:4px 10px;font-size:12px;background:#F44336;color:#fff;border:none;border-radius:6px;"><i class="fas fa-trash"></i></button>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">${crit || '<em style="color:#888;">No specific criteria</em>'}</div>
+        <div style="font-size:13px;color:#666;">📌 ${matchCount} matching listing(s) currently</div>
+        <div style="font-size:12px;color:#aaa;margin-top:4px;">Created ${new Date(search.createdAt).toLocaleDateString()}</div>
+      `;
+      card.querySelector('[data-act="run"]').addEventListener('click', () => this.applySavedSearch(index));
+      card.querySelector('[data-act="del"]').addEventListener('click', () => {
+        if (!confirm('Delete this saved search?')) return;
+        const removed = this.savedSearches.splice(index, 1)[0];
+        this.saveSavedSearches();
+        this._syncDeleteSavedSearchToServer(removed);
+        this.showMyListingsHub();
+      });
+      host.appendChild(card);
+    });
+  },
+
+  // ---- Cross-device likes (server-backed) ----
+  loadLikesFromServer: function() {
+    const self = this;
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user) return;
+    return window._wwApi('/api/me/likes', { method: 'GET', timeout: 20000 })
+      .then(function(data) {
+        const ids = (data && (data.likes || data)) || [];
+        if (!Array.isArray(ids)) return;
+        const liker = self._getLikerId();
+        ids.forEach(function(id) {
+          let entry = self.likes[id];
+          if (!entry || typeof entry === 'number') entry = { count: typeof entry === 'number' ? entry : 0, users: [] };
+          if (entry.users.indexOf(liker) === -1) entry.users.push(liker);
+          entry.count = Math.max(entry.count || 0, entry.users.length);
+          self.likes[id] = entry;
+        });
+        self.saveLikes();
+        try { self.sortListings(); } catch (_) {}
+      })
+      .catch(function(err) { console.warn('Likes sync failed:', err && err.message); });
+  },
+  _syncLikeToServer: function(listingId) {
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user || !listingId) return;
+    window._wwApi('/api/listings/' + encodeURIComponent(listingId) + '/like', { method: 'POST', body: {}, timeout: 20000 })
+      .catch(function(err) { console.warn('Like sync failed:', err && err.message); });
+  },
+
+  // ---- Saved searches (server-backed) ----
+  loadSavedSearchesFromServer: function() {
+    const self = this;
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user) return;
+    return window._wwApi('/api/saved-searches', { method: 'GET', timeout: 20000 })
+      .then(function(data) {
+        const arr = (data && (data.savedSearches || data)) || [];
+        if (!Array.isArray(arr) || !arr.length) return;
+        const localIds = new Set((self.savedSearches || []).map(s => s.id));
+        arr.forEach(function(s) {
+          const id = s.id || s._id || ('search_' + (s.createdAt ? new Date(s.createdAt).getTime() : Date.now()));
+          if (!localIds.has(id)) {
+            s.id = id;
+            self.savedSearches.unshift(s);
+            localIds.add(id);
+          }
+        });
+        self.saveSavedSearches();
+      })
+      .catch(function(err) { console.warn('Saved searches sync failed:', err && err.message); });
+  },
+  _syncSaveSavedSearchToServer: function(search) {
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user) return;
+    window._wwApi('/api/saved-searches', { method: 'POST', body: search, timeout: 20000 })
+      .catch(function(err) { console.warn('Saved search create failed:', err && err.message); });
+  },
+  _syncDeleteSavedSearchToServer: function(search) {
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user || !search || !search.id) return;
+    window._wwApi('/api/saved-searches/' + encodeURIComponent(search.id), { method: 'DELETE', timeout: 20000 })
+      .catch(function(err) { console.warn('Saved search delete failed:', err && err.message); });
+  },
+
+  // ---- Web Push subscription ----
+  setupWebPush: function() {
+    const self = this;
+    const cfg = window.WW_API || {};
+    if (!cfg.API_BASE || !this.user) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (location.protocol !== 'https:') return;
+    window._wwApi('/api/push/public-key', { method: 'GET', timeout: 15000, noAuth: true })
+      .then(function(info) {
+        if (!info || !info.enabled || !info.key) return;
+        return navigator.serviceWorker.ready.then(function(reg) {
+          return reg.pushManager.getSubscription().then(function(existing) {
+            if (existing) {
+              return window._wwApi('/api/push/subscribe', { method: 'POST', body: existing, timeout: 15000 }).catch(function(){});
+            }
+            // Only ask for permission once per browser
+            if (Notification.permission === 'denied') return;
+            const askKey = 'ww_push_asked';
+            if (localStorage.getItem(askKey) === '1' && Notification.permission !== 'granted') return;
+            localStorage.setItem(askKey, '1');
+            return Notification.requestPermission().then(function(perm) {
+              if (perm !== 'granted') return;
+              return reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: self._urlBase64ToUint8Array(info.key)
+              }).then(function(sub) {
+                return window._wwApi('/api/push/subscribe', { method: 'POST', body: sub, timeout: 15000 });
+              });
+            });
+          });
+        });
+      })
+      .catch(function(err) { console.warn('Push setup failed:', err && err.message); });
+  },
+  _urlBase64ToUint8Array: function(b64) {
+    const padding = '='.repeat((4 - b64.length % 4) % 4);
+    const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+    return out;
+  },
+
+  // ---- Theme picker ----
+  themes: {
+    beige: { '--primary': '#C8B897', '--primary-dark': '#A89B7A', '--bg': '#fafafa', '--text': '#333333' },
+    navy:  { '--primary': '#C8A84E', '--primary-dark': '#B58E30', '--bg': '#F8F9FA', '--text': '#2C3E50', '--brand': '#0F1A2A' },
+    copper:{ '--primary': '#B87333', '--primary-dark': '#8a5524', '--bg': '#FDFBF7', '--text': '#2B2B2B', '--brand': '#2B2B2B' }
+  },
+  applyTheme: function(name) {
+    const t = this.themes[name] || this.themes.beige;
+    const root = document.documentElement;
+    Object.keys(t).forEach(k => root.style.setProperty(k, t[k]));
+    try { localStorage.setItem('ww_theme', name); } catch (_) {}
+    const tmeta = document.querySelector('meta[name="theme-color"]');
+    if (tmeta) tmeta.setAttribute('content', t['--primary']);
+  },
+  showThemePicker: function() {
+    const self = this;
+    const cur = (function(){ try { return localStorage.getItem('ww_theme') || 'beige'; } catch(_) { return 'beige'; } })();
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:10001;padding:16px;';
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:14px;padding:22px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h3 style="margin:0;font-size:18px;">Choose a theme</h3>
+          <button data-x style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;">&times;</button>
+        </div>
+        ${[
+          { k:'beige',  label:'Warm Beige (current)',          swatches:['#C8B897','#A89B7A','#fafafa','#333333'] },
+          { k:'navy',   label:'Deep Navy + Gold',              swatches:['#0F1A2A','#1A2A3A','#C8A84E','#F8F9FA'] },
+          { k:'copper', label:'Charcoal + Copper / Rose Gold', swatches:['#2B2B2B','#B87333','#D4A373','#FDFBF7'] }
+        ].map(t => `
+          <button data-t="${t.k}" style="display:flex;align-items:center;gap:14px;width:100%;padding:12px;margin-bottom:10px;border:2px solid ${cur===t.k?'#C8A84E':'#eee'};border-radius:12px;background:#fff;cursor:pointer;text-align:left;">
+            <div style="display:flex;gap:4px;">
+              ${t.swatches.map(s => `<span style="width:22px;height:22px;border-radius:6px;background:${s};display:inline-block;border:1px solid rgba(0,0,0,.06);"></span>`).join('')}
+            </div>
+            <div style="flex:1;">
+              <div style="font-weight:600;">${t.label}</div>
+              ${cur===t.k?'<div style="font-size:12px;color:#C8A84E;">Active</div>':''}
+            </div>
+          </button>
+        `).join('')}
+      </div>`;
+    document.body.appendChild(modal);
+    modal.querySelector('[data-x]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('[data-t]').forEach(b => b.addEventListener('click', () => {
+      self.applyTheme(b.getAttribute('data-t'));
+      modal.remove();
+      showToast('Theme updated', 'success');
+    }));
+  },
+
+  // ---- Hook everything in once the rest of init has run ----
+  _v2Init: function() {
+    try {
+      const saved = (function(){ try { return localStorage.getItem('ww_theme'); } catch(_) { return null; } })();
+      if (saved) this.applyTheme(saved);
+    } catch (_) {}
+    this._installThemeButton();
+    this._installCustomInstallButton();
+    this._wrapToggleLike();
+    this._wrapSaveCurrentSearch();
+    if (this.user) {
+      this.loadLikesFromServer();
+      this.loadSavedSearchesFromServer();
+      this.setupWebPush();
+    }
+  },
+
+  _installThemeButton: function() {
+    if (document.getElementById('wwThemeBtn')) return;
+    const host = document.querySelector('.header-left-group') || document.querySelector('.nav-container') || document.body;
+    const btn = document.createElement('button');
+    btn.id = 'wwThemeBtn';
+    btn.title = 'Theme';
+    btn.setAttribute('aria-label', 'Choose theme');
+    btn.innerHTML = '<i class="fas fa-palette"></i>';
+    btn.style.cssText = 'background:none;border:1px solid #e0e0e0;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:16px;color:var(--primary-dark,#A89B7A);margin-left:8px;';
+    btn.addEventListener('click', () => this.showThemePicker());
+    host.appendChild(btn);
+  },
+
+  _installCustomInstallButton: function() {
+    if (document.getElementById('wwInstallBtn')) return;
+    const host = document.querySelector('.header-left-group') || document.querySelector('.nav-container');
+    if (!host) return;
+    const btn = document.createElement('button');
+    btn.id = 'wwInstallBtn';
+    btn.title = 'Install app';
+    btn.innerHTML = '<i class="fas fa-download"></i> <span style="font-size:13px;">Install</span>';
+    btn.style.cssText = 'background:var(--primary,#C8B897);color:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600;margin-left:8px;display:none;';
+    btn.addEventListener('click', () => this.handleInstallClick());
+    host.appendChild(btn);
+    const sync = () => { btn.style.display = (this.deferredPrompt && !this.isAppInstalled && !this.isAppInstalled()) ? 'inline-flex' : 'none'; };
+    window.addEventListener('beforeinstallprompt', () => setTimeout(sync, 50));
+    window.addEventListener('appinstalled', () => { btn.style.display = 'none'; });
+    setTimeout(sync, 1000);
+  },
+
+  _wrapToggleLike: function() {
+    const orig = this.toggleLike.bind(this);
+    const self = this;
+    this.toggleLike = function(listingId) {
+      const r = orig(listingId);
+      try { self._syncLikeToServer(listingId); } catch (_) {}
+      return r;
+    };
+  },
+
+  _wrapSaveCurrentSearch: function() {
+    const orig = this.saveCurrentSearch.bind(this);
+    const self = this;
+    this.saveCurrentSearch = function(label) {
+      const r = orig(label);
+      try {
+        const last = (self.savedSearches || [])[0];
+        if (last) self._syncSaveSavedSearchToServer(last);
+      } catch (_) {}
+      return r;
+    };
   }
+
 };
+
+// Run v2 hooks AFTER the original init completes.
+(function() {
+  function hookV2() {
+    try {
+      window.WW_APP._v2Init();
+      // Re-run push setup whenever the user logs in.
+      const _origUpdateUserMenu = window.WW_APP.updateUserMenu && window.WW_APP.updateUserMenu.bind(window.WW_APP);
+      if (_origUpdateUserMenu) {
+        window.WW_APP.updateUserMenu = function() {
+          const r = _origUpdateUserMenu.apply(this, arguments);
+          if (this.user) {
+            try { this.loadLikesFromServer(); } catch(_) {}
+            try { this.loadSavedSearchesFromServer(); } catch(_) {}
+            try { this.setupWebPush(); } catch(_) {}
+          }
+          return r;
+        };
+      }
+    } catch (e) { console.warn('v2 hook failed:', e && e.message); }
+  }
+  if (window.WW_APP && window.WW_APP.initialized) hookV2();
+  else if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(hookV2, 0));
+  } else {
+    setTimeout(hookV2, 0);
+  }
+})();
 
 // Initialize the app when DOM is ready
 if (!window.WW_APP.initialized) {
